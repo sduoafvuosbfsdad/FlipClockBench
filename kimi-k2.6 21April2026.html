@@ -139,7 +139,6 @@ class TextureManager {
         this.fullCanvas.width = 512;
         this.fullCanvas.height = 512;
 
-        // Pre-generate all textures to avoid frame drops
         for (let d = 0; d <= 9; d++) {
             this.getTexture(d, 'top');
             this.getTexture(d, 'bottom');
@@ -159,14 +158,12 @@ class TextureManager {
         const fctx = this.fullCanvas.getContext('2d');
         const w = 512, h = 512;
 
-        // Background with subtle vertical gradient for depth
         const grad = fctx.createLinearGradient(0, 0, 0, h);
         grad.addColorStop(0, '#262626');
         grad.addColorStop(1, '#151515');
         fctx.fillStyle = grad;
         fctx.fillRect(0, 0, w, h);
 
-        // Digit
         fctx.fillStyle = '#e6e6e6';
         fctx.font = 'bold 400px "Courier New", monospace';
         fctx.textAlign = 'center';
@@ -180,20 +177,16 @@ class TextureManager {
 
         if (type === 'top') {
             ctx.drawImage(this.fullCanvas, 0, 0, 512, 256, 0, 0, 512, 256);
-            // Seam shadow at bottom
             ctx.fillStyle = '#050505';
             ctx.fillRect(0, 250, 512, 6);
         } else if (type === 'bottom') {
             ctx.drawImage(this.fullCanvas, 0, 256, 512, 256, 0, 0, 512, 256);
-            // Seam shadow at top
             ctx.fillStyle = '#050505';
             ctx.fillRect(0, 0, 512, 6);
         } else if (type === 'bottomFlipped') {
-            // Flip vertically so it reads correctly on the back face after 180° rotation
             ctx.translate(0, 256);
             ctx.scale(1, -1);
             ctx.drawImage(this.fullCanvas, 0, 256, 512, 256, 0, 0, 512, 256);
-            // After transform, seam ends up at canvas bottom (visual top when rendered)
             ctx.fillStyle = '#050505';
             ctx.fillRect(0, 250, 512, 6);
         }
@@ -226,7 +219,8 @@ class FlipDigit {
         this.pendingValue = undefined;
         this.isFlipping = false;
         this.flipProgress = 0;
-        this.flipDuration = 0.42; // seconds
+        this.flipDuration = 0.42;
+        this.bottomUpdated = false;
 
         this.group = new THREE.Group();
         this.group.position.set(x, 0, 0);
@@ -239,7 +233,7 @@ class FlipDigit {
 
         // --- Top Static Panel ---
         const topGeo = new THREE.BoxGeometry(this.width, this.halfH, this.depth);
-        topGeo.translate(0, this.halfH / 2, 0); // pivot at bottom edge (seam)
+        topGeo.translate(0, this.halfH / 2, 0);
         this.topMat = new THREE.MeshStandardMaterial({ ...matOpts });
         this.topMesh = new THREE.Mesh(topGeo, this.topMat);
         this.topMesh.position.y = 0;
@@ -249,7 +243,7 @@ class FlipDigit {
 
         // --- Bottom Static Panel ---
         const botGeo = new THREE.BoxGeometry(this.width, this.halfH, this.depth);
-        botGeo.translate(0, -this.halfH / 2, 0); // pivot at top edge (seam)
+        botGeo.translate(0, -this.halfH / 2, 0);
         this.botMat = new THREE.MeshStandardMaterial({ ...matOpts });
         this.botMesh = new THREE.Mesh(botGeo, this.botMat);
         this.botMesh.position.y = 0;
@@ -259,30 +253,28 @@ class FlipDigit {
 
         // --- Flip Card (pivot group at seam) ---
         this.flipGroup = new THREE.Group();
-        this.flipGroup.position.set(0, 0, 0.06); // slightly in front
+        this.flipGroup.position.set(0, 0, 0.06);
         this.group.add(this.flipGroup);
 
         const flipGeo = new THREE.BoxGeometry(this.width, this.halfH, 0.02);
-        flipGeo.translate(0, this.halfH / 2, 0); // pivot at bottom edge
+        flipGeo.translate(0, this.halfH / 2, 0);
 
         this.flipMatFront = new THREE.MeshStandardMaterial({ ...matOpts });
         this.flipMatBack = new THREE.MeshStandardMaterial({ ...matOpts });
         const sideMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.6 });
 
-        // BoxGeometry face order: +x, -x, +y, -y, +z (front), -z (back)
         const materials = [sideMat, sideMat, sideMat, sideMat, this.flipMatFront, this.flipMatBack];
         this.flipMesh = new THREE.Mesh(flipGeo, materials);
         this.flipMesh.castShadow = true;
         this.flipGroup.add(this.flipMesh);
 
-        // --- Seam Separator (hides the 90° edge-on transition) ---
+        // --- Seam Separator ---
         const sepGeo = new THREE.BoxGeometry(this.width + 0.04, 0.025, this.depth + 0.04);
         const sepMat = new THREE.MeshStandardMaterial({ color: 0x030303 });
         const sep = new THREE.Mesh(sepGeo, sepMat);
         sep.position.z = 0.07;
         this.group.add(sep);
 
-        // Initialize
         this.setValueImmediate(0);
     }
 
@@ -312,6 +304,7 @@ class FlipDigit {
     startFlip() {
         this.isFlipping = true;
         this.flipProgress = 0;
+        this.bottomUpdated = false;
 
         const oldVal = this.currentValue;
         const newVal = this.targetValue;
@@ -319,9 +312,6 @@ class FlipDigit {
         // Top static updates immediately but remains covered by flip card
         this.topMat.map = this.tm.getTexture(newVal, 'top');
         this.topMat.needsUpdate = true;
-
-        // Bottom static stays on old value until flip completes
-        // (so during 0°→-90° we see the complete old digit)
 
         // Flip card front shows old top
         this.flipMatFront.map = this.tm.getTexture(oldVal >= 0 ? oldVal : newVal, 'top');
@@ -331,7 +321,6 @@ class FlipDigit {
         this.flipMatBack.map = this.tm.getTexture(newVal, 'bottomFlipped');
         this.flipMatBack.needsUpdate = true;
 
-        // Ensure visible and reset
         this.flipGroup.position.z = 0.06;
         this.flipGroup.rotation.x = 0;
 
@@ -342,17 +331,17 @@ class FlipDigit {
         this.isFlipping = false;
         this.currentValue = this.targetValue;
 
-        // Update bottom static to match new value
-        this.botMat.map = this.tm.getTexture(this.currentValue, 'bottom');
-        this.botMat.needsUpdate = true;
+        // Ensure bottom is updated
+        if (!this.bottomUpdated) {
+            this.botMat.map = this.tm.getTexture(this.currentValue, 'bottom');
+            this.botMat.needsUpdate = true;
+        }
 
         // Hide flip card behind static panels
         this.flipGroup.position.z = -0.12;
-
-        // Instantly reset rotation while hidden
         this.flipGroup.rotation.x = 0;
 
-        // Prepare front face for next flip (now matches top static, so invisible when moved forward)
+        // Prepare front face for next flip
         this.flipMatFront.map = this.tm.getTexture(this.currentValue, 'top');
         this.flipMatFront.needsUpdate = true;
 
@@ -361,7 +350,6 @@ class FlipDigit {
 
         this.audio.playClack();
 
-        // Handle queued changes
         if (this.pendingValue !== undefined && this.pendingValue !== this.currentValue) {
             this.targetValue = this.pendingValue;
             this.pendingValue = undefined;
@@ -379,10 +367,18 @@ class FlipDigit {
             return;
         }
 
-        // Gravity-like ease-in (accelerating fall)
         const t = this.flipProgress;
-        const eased = t * t * (3 - 2 * t); // smoothstep for mechanical feel
-        this.flipGroup.rotation.x = -Math.PI * eased;
+        const eased = t * t * (3 - 2 * t);
+
+        // Rotate toward the viewer (+PI) instead of behind (-PI)
+        this.flipGroup.rotation.x = Math.PI * eased;
+
+        // Update bottom panel at the halfway point when the card is horizontal
+        if (this.flipProgress > 0.5 && !this.bottomUpdated) {
+            this.bottomUpdated = true;
+            this.botMat.map = this.tm.getTexture(this.targetValue, 'bottom');
+            this.botMat.needsUpdate = true;
+        }
     }
 }
 
@@ -461,7 +457,6 @@ class FlipClock {
 
         for (const d of this.digits) d.update(dt);
 
-        // Pulse colons
         this.colonPhase += dt * 3;
         const intensity = 0.4 + 0.3 * Math.sin(this.colonPhase);
         for (const c of this.colons) {
@@ -555,7 +550,7 @@ let lastTime = performance.now();
 function animate() {
     requestAnimationFrame(animate);
     const now = performance.now();
-    const dt = Math.min((now - lastTime) / 1000, 0.1); // cap dt
+    const dt = Math.min((now - lastTime) / 1000, 0.1);
     lastTime = now;
 
     clock.update(dt);
